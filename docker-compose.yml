@@ -1,0 +1,106 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:13
+    container_name: postgres_db
+    restart: always
+    environment:
+      POSTGRES_DB: celery_db
+      POSTGRES_USER: celery_user
+      POSTGRES_PASSWORD: celery_pass
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - celery_network
+
+  redis:
+    image: redis:latest
+    container_name: redis_broker
+    restart: always
+    ports:
+      - "6380:6379"
+    networks:
+      - celery_network
+    command: ["redis-server", "--appendonly", "yes"]
+
+  celery_worker_pg:
+    image: python:3.9
+    container_name: celery_worker_pg
+    depends_on:
+      - postgres
+    volumes:
+      - ./celery_app:/app
+    working_dir: /app
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt && celery -A tasks worker --loglevel=info"
+    environment:
+      CELERY_BROKER_URL: "sqla+postgresql://celery_user:celery_pass@postgres_db:5432/celery_db"
+      CELERY_RESULT_BACKEND: "db+postgresql://celery_user:celery_pass@postgres_db:5432/celery_db"
+    networks:
+      - celery_network
+
+  celery_worker_redis:
+    image: python:3.9
+    container_name: celery_worker_redis
+    depends_on:
+      - redis
+    volumes:
+      - ./celery_app:/app
+    working_dir: /app
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt && celery -A tasks worker --loglevel=info"
+    environment:
+      CELERY_BROKER_URL: "redis://redis_broker:6379/0"
+      CELERY_RESULT_BACKEND: "redis://redis_broker:6379/0"
+    networks:
+      - celery_network
+
+  flower:
+    image: python:3.9
+    container_name: celery_flower
+    depends_on:
+      - celery_worker_pg
+      - celery_worker_redis
+    volumes:
+      - ./celery_app:/app
+    working_dir: /app
+    ports:
+      - "5556:5555"
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt && celery -A tasks --broker=redis://redis_broker:6379 flower --port=5555"
+    networks:
+      - celery_network
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "8082:80"
+    depends_on:
+      - postgres
+    networks:
+      - celery_network
+
+  jupyter:
+    image: jupyter/base-notebook
+    container_name: jupyter_notebook
+    ports:
+      - "8889:8888"
+    volumes:
+      - ./notebooks:/home/jovyan/work
+    command: start-notebook.sh --NotebookApp.token=''
+    networks:
+      - celery_network
+
+volumes:
+  postgres_data: {}
+
+networks:
+  celery_network:
+    driver: bridge
